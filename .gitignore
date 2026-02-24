@@ -1,0 +1,17 @@
+# Environment
+.env
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs and data (keep dirs, ignore contents)
+logs/*.json
+logs/*.log
+data/*.csv
+data/*.json
+
+# OS
+.DS_Store
