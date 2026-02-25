@@ -19,7 +19,7 @@ MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", "3.0"))
 
 # --- Signal safety ---
 SIGNAL_COOLDOWN_HOURS = int(os.getenv("SIGNAL_COOLDOWN_HOURS", "4"))
-ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.015"))
+ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.03"))
 
 # --- Top-20 coins to scan ---
 SYMBOLS = [

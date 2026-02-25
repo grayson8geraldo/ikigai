@@ -179,14 +179,36 @@ class Trader:
         # Use current market price as actual entry in paper mode
         actual_entry = current_price if config.TRADING_MODE != "live" else signal.entry_price
 
+        # --- Recalculate SL/TP when actual entry differs from signal entry ---
+        actual_sl = signal.stop_loss
+        actual_tp = take_profit
+        if actual_entry != signal.entry_price and signal.entry_price > 0:
+            # Maintain the same risk/reward percentages relative to actual entry
+            sl_pct = abs(signal.entry_price - signal.stop_loss) / signal.entry_price
+            if signal.direction == Direction.LONG:
+                actual_sl = actual_entry * (1 - sl_pct)
+                if take_profit > 0:
+                    tp_pct = (take_profit - signal.entry_price) / signal.entry_price
+                    actual_tp = actual_entry * (1 + tp_pct)
+            else:
+                actual_sl = actual_entry * (1 + sl_pct)
+                if take_profit > 0:
+                    tp_pct = (signal.entry_price - take_profit) / signal.entry_price
+                    actual_tp = actual_entry * (1 - tp_pct)
+            logger.info(
+                "Adjusted SL/TP for %s: SL %.4f→%.4f, TP %.4f→%.4f (entry %.4f→%.4f)",
+                signal.symbol, signal.stop_loss, actual_sl,
+                take_profit, actual_tp, signal.entry_price, actual_entry,
+            )
+
         # Place order
         side = "buy" if signal.direction == Direction.LONG else "sell"
 
         order_params = {}
         if config.TRADING_MODE == "live":
             order_params = {
-                "stopLoss": {"triggerPrice": str(signal.stop_loss)},
-                "takeProfit": {"triggerPrice": str(take_profit)},
+                "stopLoss": {"triggerPrice": str(actual_sl)},
+                "takeProfit": {"triggerPrice": str(actual_tp)},
             }
 
         order = self.exchange.create_market_order(
@@ -209,8 +231,8 @@ class Trader:
             size=sizing["size_base"],
             margin=sizing["margin"],
             leverage=sizing["leverage"],
-            stop_loss=signal.stop_loss,
-            take_profit=take_profit,
+            stop_loss=actual_sl,
+            take_profit=actual_tp,
             signal=signal,
         )
 
@@ -224,8 +246,8 @@ class Trader:
             signal.symbol,
             actual_entry,
             signal.entry_price,
-            signal.stop_loss,
-            take_profit,
+            actual_sl,
+            actual_tp,
             sizing["margin"],
             sizing["leverage"],
         )

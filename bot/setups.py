@@ -225,6 +225,8 @@ def check_triangle_setup(
     wa, wb, wc, wd, we = triangle.waves
 
     # Direction based on trend (triangle = continuation pattern in symmetric case)
+    min_stop_pct = 0.015  # minimum 1.5% stop distance to avoid micro-stops
+
     if trend == Trend.UP:
         direction = Direction.LONG
         # Breakout confirmation: price above wave B high
@@ -233,6 +235,9 @@ def check_triangle_setup(
             return None  # not yet broken out
         entry_price = breakout_level
         stop_loss = min(we.start.price, we.end.price) * 0.995
+        # Enforce minimum stop distance
+        if entry_price > 0 and (entry_price - stop_loss) / entry_price < min_stop_pct:
+            stop_loss = entry_price * (1 - min_stop_pct)
     elif trend == Trend.DOWN:
         direction = Direction.SHORT
         breakout_level = min(wb.start.price, wb.end.price)
@@ -240,6 +245,9 @@ def check_triangle_setup(
             return None
         entry_price = breakout_level
         stop_loss = max(we.start.price, we.end.price) * 1.005
+        # Enforce minimum stop distance
+        if entry_price > 0 and (stop_loss - entry_price) / entry_price < min_stop_pct:
+            stop_loss = entry_price * (1 + min_stop_pct)
     else:
         return None
 

@@ -47,6 +47,9 @@ class RiskManager:
         if signal.rr_ratio < config.MIN_RR_RATIO:
             return False, f"R:R too low: {signal.rr_ratio:.1f} < {config.MIN_RR_RATIO}"
 
+        if signal.rr_ratio > 50:
+            return False, f"R:R unrealistic: {signal.rr_ratio:.1f} > 50 (stop too tight)"
+
         # Check risk percentage
         risk_pct = signal.risk_pct
         if risk_pct > 0.15:  # stop more than 15% away is suspicious
