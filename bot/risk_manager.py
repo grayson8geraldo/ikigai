@@ -1,11 +1,15 @@
 """Risk manager — position sizing, limits, and trade validation."""
 
 import logging
+import time
 from bot.models import Signal, Direction
 
 import config
 
 logger = logging.getLogger(__name__)
+
+# After hitting max consecutive losses, wait this long before allowing trades again
+_LOSS_COOLDOWN_SECONDS = 3600  # 1 hour
 
 
 class RiskManager:
@@ -17,8 +21,10 @@ class RiskManager:
         self.daily_losses = 0
         self.daily_loss_limit = 0.20  # 20% of balance
         self.consecutive_losses = 0
-        self.max_consecutive_losses = 3
+        self.max_consecutive_losses = 5
         self.trades_today = 0
+        # Timestamp when consecutive loss limit was hit (0 = not in cooldown)
+        self._loss_cooldown_until = 0.0
 
     def update_balance(self, balance: float):
         self.balance = balance
@@ -27,6 +33,9 @@ class RiskManager:
         """Call at the start of each trading day."""
         self.daily_losses = 0
         self.trades_today = 0
+        self.consecutive_losses = 0
+        self._loss_cooldown_until = 0.0
+        logger.info("Daily reset: consecutive losses, daily losses, trade counters cleared")
 
     def can_trade(self) -> tuple[bool, str]:
         """Check if we are allowed to open a new trade."""
@@ -34,7 +43,33 @@ class RiskManager:
             return False, f"Max positions reached ({config.MAX_POSITIONS})"
 
         if self.consecutive_losses >= self.max_consecutive_losses:
-            return False, f"Max consecutive losses reached ({self.max_consecutive_losses})"
+            # Check if cooldown has expired
+            now = time.time()
+            if self._loss_cooldown_until == 0.0:
+                # First time hitting limit — start cooldown
+                self._loss_cooldown_until = now + _LOSS_COOLDOWN_SECONDS
+                logger.warning(
+                    "Consecutive loss limit hit (%d). Cooldown for %d min.",
+                    self.max_consecutive_losses,
+                    _LOSS_COOLDOWN_SECONDS // 60,
+                )
+                return False, (
+                    f"Max consecutive losses ({self.max_consecutive_losses}), "
+                    f"cooldown {_LOSS_COOLDOWN_SECONDS // 60} min"
+                )
+            elif now < self._loss_cooldown_until:
+                remaining = (self._loss_cooldown_until - now) / 60
+                return False, (
+                    f"Loss cooldown active ({remaining:.0f} min remaining)"
+                )
+            else:
+                # Cooldown expired — reset and allow trading with reduced risk
+                logger.info(
+                    "Loss cooldown expired. Resetting consecutive losses, "
+                    "trading with reduced risk."
+                )
+                self.consecutive_losses = 0
+                self._loss_cooldown_until = 0.0
 
         if self.balance > 0 and self.daily_losses / self.balance >= self.daily_loss_limit:
             return False, f"Daily loss limit reached ({self.daily_loss_limit:.0%})"

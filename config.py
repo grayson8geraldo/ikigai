@@ -19,7 +19,13 @@ MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", "3.0"))
 
 # --- Signal safety ---
 SIGNAL_COOLDOWN_HOURS = int(os.getenv("SIGNAL_COOLDOWN_HOURS", "4"))
-ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.03"))
+ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.05"))
+
+# Minimum stop-loss distance as fraction of price (applies to ALL setup types)
+MIN_STOP_DISTANCE_PCT = float(os.getenv("MIN_STOP_DISTANCE_PCT", "0.015"))  # 1.5%
+
+# Maximum age (hours) for positions loaded from disk — stale positions are discarded
+MAX_POSITION_AGE_HOURS = int(os.getenv("MAX_POSITION_AGE_HOURS", "48"))
 
 # --- Top-20 coins to scan ---
 SYMBOLS = [

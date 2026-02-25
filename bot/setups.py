@@ -63,13 +63,20 @@ def check_zigzag_setup(
         if dist > 0.03:
             return None
 
-    # Stop loss: beyond the extreme of wave C
+    # Stop loss: beyond the extreme of wave C, with minimum distance enforced
+    min_stop_pct = config.MIN_STOP_DISTANCE_PCT  # minimum stop distance (e.g. 1.5%)
+
     if direction == Direction.LONG:
-        stop_loss = wc.end.price * 0.99  # slightly below C end
         # Use the lowest point of C as stop
         stop_loss = min(wc.end.price, wc.start.price) * 0.995
+        # Enforce minimum stop distance
+        if entry_price > 0 and (entry_price - stop_loss) / entry_price < min_stop_pct:
+            stop_loss = entry_price * (1 - min_stop_pct)
     else:
         stop_loss = max(wc.end.price, wc.start.price) * 1.005
+        # Enforce minimum stop distance
+        if entry_price > 0 and (stop_loss - entry_price) / entry_price < min_stop_pct:
+            stop_loss = entry_price * (1 + min_stop_pct)
 
     # Target: trend-based extension from the wave before zigzag
     targets = fibonacci.trend_based_extension(
@@ -149,15 +156,23 @@ def check_diagonal_setup(
     # Entry: 0.618 of wave 3 from the end of wave 4
     # (expected completion zone of wave 5)
     w3_length = w3.length
+    min_stop_pct = config.MIN_STOP_DISTANCE_PCT  # minimum stop distance (e.g. 1.5%)
+
     if direction == Direction.SHORT:
         # Ascending diagonal: wave 5 end expected at w4.end + 0.618 * w3
         expected_w5_end = w4.end.price + w3_length * 0.618
         entry_price = expected_w5_end
         stop_loss = w4.end.price + w3_length * 1.05  # beyond wave 3 projection
+        # Enforce minimum stop distance
+        if entry_price > 0 and (stop_loss - entry_price) / entry_price < min_stop_pct:
+            stop_loss = entry_price * (1 + min_stop_pct)
     else:
         expected_w5_end = w4.end.price - w3_length * 0.618
         entry_price = expected_w5_end
         stop_loss = w4.end.price - w3_length * 1.05
+        # Enforce minimum stop distance
+        if entry_price > 0 and (entry_price - stop_loss) / entry_price < min_stop_pct:
+            stop_loss = entry_price * (1 - min_stop_pct)
 
     # Check if current price is near expected entry
     if current_price > 0:

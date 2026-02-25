@@ -40,11 +40,17 @@ class Trader:
     # ------------------------------------------------------------------
 
     def _load_state(self):
-        """Load open positions and history from disk."""
+        """Load open positions and history from disk with validation."""
         if os.path.exists(POSITIONS_FILE):
             try:
                 with open(POSITIONS_FILE) as f:
                     data = json.load(f)
+
+                # Maximum sane margin: 5x initial deposit
+                max_margin = config.PAPER_DEPOSIT * 5
+                max_age_sec = config.MAX_POSITION_AGE_HOURS * 3600
+                seen_symbols: set[str] = set()
+
                 for p in data:
                     pos = Position(
                         id=p["id"],
@@ -60,8 +66,54 @@ class Trader:
                         open_time=p.get("open_time", 0),
                         is_open=p.get("is_open", True),
                     )
-                    if pos.is_open:
-                        self.positions.append(pos)
+                    if not pos.is_open:
+                        continue
+
+                    # Validate: reject positions with corrupted/unreasonable margin
+                    if pos.margin > max_margin:
+                        logger.warning(
+                            "Discarding corrupted position %s %s: "
+                            "margin=$%.2f exceeds max $%.2f",
+                            pos.symbol, pos.id, pos.margin, max_margin,
+                        )
+                        continue
+
+                    # Validate: reject positions older than MAX_POSITION_AGE_HOURS
+                    if pos.open_time > 0:
+                        age = time.time() - pos.open_time
+                        if age > max_age_sec:
+                            logger.warning(
+                                "Discarding stale position %s %s: "
+                                "age=%.1fh exceeds max %dh",
+                                pos.symbol, pos.id,
+                                age / 3600, config.MAX_POSITION_AGE_HOURS,
+                            )
+                            continue
+
+                    # Validate: reject positions with zero/negative entry price
+                    if pos.entry_price <= 0:
+                        logger.warning(
+                            "Discarding invalid position %s %s: entry_price=%.4f",
+                            pos.symbol, pos.id, pos.entry_price,
+                        )
+                        continue
+
+                    # Deduplicate: keep only one position per symbol
+                    if pos.symbol in seen_symbols:
+                        logger.warning(
+                            "Discarding duplicate position %s %s "
+                            "(already have one for this symbol)",
+                            pos.symbol, pos.id,
+                        )
+                        continue
+
+                    seen_symbols.add(pos.symbol)
+                    self.positions.append(pos)
+
+                if self.positions:
+                    logger.info(
+                        "Loaded %d valid position(s) from disk", len(self.positions)
+                    )
             except Exception as e:
                 logger.error("Failed to load positions: %s", e)
 
@@ -200,6 +252,22 @@ class Trader:
                 signal.symbol, signal.stop_loss, actual_sl,
                 take_profit, actual_tp, signal.entry_price, actual_entry,
             )
+
+        # --- Enforce minimum stop distance after any adjustments ---
+        min_stop_pct = config.MIN_STOP_DISTANCE_PCT
+        if actual_entry > 0:
+            current_sl_pct = abs(actual_entry - actual_sl) / actual_entry
+            if current_sl_pct < min_stop_pct:
+                old_sl = actual_sl
+                if signal.direction == Direction.LONG:
+                    actual_sl = actual_entry * (1 - min_stop_pct)
+                else:
+                    actual_sl = actual_entry * (1 + min_stop_pct)
+                logger.info(
+                    "Enforced min stop distance for %s: SL %.4f→%.4f (%.2f%% → %.2f%%)",
+                    signal.symbol, old_sl, actual_sl,
+                    current_sl_pct * 100, min_stop_pct * 100,
+                )
 
         # Place order
         side = "buy" if signal.direction == Direction.LONG else "sell"
