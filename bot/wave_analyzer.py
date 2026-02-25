@@ -111,26 +111,167 @@ def swings_to_waves(swings: list[SwingPoint]) -> list[Wave]:
 
 
 # ---------------------------------------------------------------------------
-# Trend detection
+# Trend detection (EMA stack + ADX + structure)
 # ---------------------------------------------------------------------------
 
-def detect_trend(df: pd.DataFrame, period: int = 50) -> Trend:
-    """Simple trend detection using moving average slope."""
-    if len(df) < period:
+def _ema(values: np.ndarray, period: int) -> np.ndarray:
+    """Calculate Exponential Moving Average."""
+    return pd.Series(values).ewm(span=period, adjust=False).mean().values
+
+
+def _adx(df: pd.DataFrame, period: int = 14) -> float:
+    """Calculate the latest ADX value (Average Directional Index).
+
+    ADX measures trend *strength* regardless of direction:
+      > 25  = trending
+      < 20  = ranging / sideways
+    """
+    high = df["high"].values
+    low = df["low"].values
+    close = df["close"].values
+
+    if len(df) < period * 2:
+        return 0.0
+
+    plus_dm = np.zeros(len(df))
+    minus_dm = np.zeros(len(df))
+    tr = np.zeros(len(df))
+
+    for i in range(1, len(df)):
+        up_move = high[i] - high[i - 1]
+        down_move = low[i - 1] - low[i]
+
+        plus_dm[i] = up_move if (up_move > down_move and up_move > 0) else 0
+        minus_dm[i] = down_move if (down_move > up_move and down_move > 0) else 0
+
+        tr[i] = max(
+            high[i] - low[i],
+            abs(high[i] - close[i - 1]),
+            abs(low[i] - close[i - 1]),
+        )
+
+    # Smoothed averages (Wilder's method)
+    atr = pd.Series(tr).ewm(alpha=1 / period, adjust=False).mean().values
+    smooth_plus = pd.Series(plus_dm).ewm(alpha=1 / period, adjust=False).mean().values
+    smooth_minus = pd.Series(minus_dm).ewm(alpha=1 / period, adjust=False).mean().values
+
+    # Directional indicators
+    with np.errstate(divide="ignore", invalid="ignore"):
+        plus_di = 100 * smooth_plus / atr
+        minus_di = 100 * smooth_minus / atr
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+
+    dx = np.nan_to_num(dx, nan=0.0)
+    adx_values = pd.Series(dx).ewm(alpha=1 / period, adjust=False).mean().values
+
+    return float(adx_values[-1])
+
+
+def _detect_structure(swings: list, min_points: int = 4) -> str:
+    """Detect higher-highs/higher-lows or lower-highs/lower-lows structure.
+
+    Returns: 'hh_hl' (uptrend), 'lh_ll' (downtrend), or 'mixed'.
+    """
+    if len(swings) < min_points:
+        return "mixed"
+
+    recent = swings[-min_points:]
+    highs = [s for s in recent if s.is_high]
+    lows = [s for s in recent if not s.is_high]
+
+    hh = all(highs[i].price > highs[i - 1].price for i in range(1, len(highs))) if len(highs) >= 2 else False
+    hl = all(lows[i].price > lows[i - 1].price for i in range(1, len(lows))) if len(lows) >= 2 else False
+    lh = all(highs[i].price < highs[i - 1].price for i in range(1, len(highs))) if len(highs) >= 2 else False
+    ll = all(lows[i].price < lows[i - 1].price for i in range(1, len(lows))) if len(lows) >= 2 else False
+
+    if hh and hl:
+        return "hh_hl"
+    if lh and ll:
+        return "lh_ll"
+    return "mixed"
+
+
+def detect_trend(df: pd.DataFrame, swings: list = None) -> Trend:
+    """Multi-factor trend detection.
+
+    Combines three independent signals:
+      1. EMA stack (20 > 50 > 200 = bullish, inverse = bearish)
+      2. ADX strength (> 25 = trending, otherwise ignore)
+      3. Market structure (HH/HL vs LH/LL from swing points)
+
+    Each factor votes UP / DOWN / SIDEWAYS. Majority wins.
+    """
+    if len(df) < 50:
         return Trend.SIDEWAYS
 
     closes = df["close"].values
-    ma = pd.Series(closes).rolling(period).mean().values
+    votes: list[Trend] = []
 
-    recent_ma = ma[-10:]
-    valid = recent_ma[~np.isnan(recent_ma)]
-    if len(valid) < 2:
-        return Trend.SIDEWAYS
+    # --- Factor 1: EMA alignment ---
+    ema20 = _ema(closes, 20)
+    ema50 = _ema(closes, 50)
 
-    slope = (valid[-1] - valid[0]) / valid[0]
-    if slope > 0.01:
+    if len(df) >= 200:
+        ema200 = _ema(closes, 200)
+        last_20, last_50, last_200 = ema20[-1], ema50[-1], ema200[-1]
+
+        if last_20 > last_50 > last_200:
+            votes.append(Trend.UP)
+        elif last_20 < last_50 < last_200:
+            votes.append(Trend.DOWN)
+        else:
+            # Partial alignment
+            if last_20 > last_50:
+                votes.append(Trend.UP)
+            elif last_20 < last_50:
+                votes.append(Trend.DOWN)
+            else:
+                votes.append(Trend.SIDEWAYS)
+    else:
+        last_20, last_50 = ema20[-1], ema50[-1]
+        if last_20 > last_50:
+            votes.append(Trend.UP)
+        elif last_20 < last_50:
+            votes.append(Trend.DOWN)
+        else:
+            votes.append(Trend.SIDEWAYS)
+
+    # --- Factor 2: ADX + directional bias ---
+    adx_val = _adx(df)
+    if adx_val >= 25:
+        # ADX is strong — use EMA slope to determine direction
+        slope = (ema20[-1] - ema20[-5]) / ema20[-5] if len(ema20) >= 5 and ema20[-5] != 0 else 0
+        if slope > 0.005:
+            votes.append(Trend.UP)
+        elif slope < -0.005:
+            votes.append(Trend.DOWN)
+        else:
+            votes.append(Trend.SIDEWAYS)
+    else:
+        votes.append(Trend.SIDEWAYS)  # weak trend
+
+    # --- Factor 3: Market structure (HH/HL vs LH/LL) ---
+    if swings and len(swings) >= 4:
+        structure = _detect_structure(swings)
+    else:
+        # Quick swing detection for trend purpose
+        quick_swings = find_swings(df, lookback=3, min_pct=0.01)
+        structure = _detect_structure(quick_swings)
+
+    if structure == "hh_hl":
+        votes.append(Trend.UP)
+    elif structure == "lh_ll":
+        votes.append(Trend.DOWN)
+    else:
+        votes.append(Trend.SIDEWAYS)
+
+    # --- Majority vote ---
+    up_count = votes.count(Trend.UP)
+    down_count = votes.count(Trend.DOWN)
+
+    if up_count >= 2:
         return Trend.UP
-    elif slope < -0.01:
+    if down_count >= 2:
         return Trend.DOWN
     return Trend.SIDEWAYS
 
@@ -496,9 +637,8 @@ def analyze(df: pd.DataFrame) -> dict:
         triangles: list[WaveStructure]
         diagonals: list[WaveStructure]
     """
-    trend = detect_trend(df)
     swings = find_swings(df)
-    waves_list = swings_to_waves(swings)
+    trend = detect_trend(df, swings=swings)
 
     result = {
         "trend": trend,

@@ -71,22 +71,7 @@ def check_zigzag_setup(
     else:
         stop_loss = max(wc.end.price, wc.start.price) * 1.005
 
-    # Targets using Fibonacci extension from the previous impulse
-    impulse_start = SwingPoint(
-        index=wa.start.index, price=wa.start.price,
-        timestamp=wa.start.timestamp, is_high=wa.start.is_high,
-    )
-    impulse_end = SwingPoint(
-        index=wa.start.index, price=wa.start.price,
-        timestamp=wa.start.timestamp, is_high=wa.start.is_high,
-    )
-    correction_end = SwingPoint(
-        index=wc.end.index, price=wc.end.price,
-        timestamp=wc.end.timestamp, is_high=wc.end.is_high,
-    )
-
     # Target: trend-based extension from the wave before zigzag
-    pre_swing = wa.start  # the high/low before the correction started
     targets = fibonacci.trend_based_extension(
         point_a=SwingPoint(
             index=0, price=wa.start.price - wa.length * (1 if direction == Direction.LONG else -1),

@@ -11,7 +11,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, date
 
 import config
 from bot.exchange import Exchange
@@ -177,8 +177,16 @@ def main():
 
     if args.loop:
         logger.info("Starting continuous scanning (every %d min)...", args.interval)
+        last_reset_date = date.today()
         while True:
             try:
+                # Daily reset of risk manager counters
+                today = date.today()
+                if today != last_reset_date:
+                    risk_manager.reset_daily()
+                    last_reset_date = today
+                    logger.info("Daily reset: losses and trade counters cleared")
+
                 run_scan_cycle(scanner, trader, auto_trade=args.trade)
                 logger.info("Next scan in %d minutes...", args.interval)
                 time.sleep(args.interval * 60)

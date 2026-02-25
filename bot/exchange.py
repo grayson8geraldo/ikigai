@@ -27,6 +27,9 @@ class Exchange:
             params["secret"] = config.BYBIT_API_SECRET
 
         self.client = ccxt.bybit(params)
+        # Price cache: symbol -> (price, timestamp)
+        self._price_cache: dict[str, tuple[float, float]] = {}
+        self._price_cache_ttl = 10.0  # seconds
 
     def _retry(self, func, description: str):
         """Execute a function with retry and exponential backoff on network errors."""
@@ -77,11 +80,21 @@ class Exchange:
         )
 
     def get_current_price(self, symbol: str) -> float:
-        """Get current price for a symbol."""
+        """Get current price for a symbol (cached with TTL)."""
+        cached = self._price_cache.get(symbol)
+        if cached and time.time() - cached[1] < self._price_cache_ttl:
+            return cached[0]
+
         ticker = self.fetch_ticker(symbol)
         if ticker and ticker.get("last"):
-            return float(ticker["last"])
+            price = float(ticker["last"])
+            self._price_cache[symbol] = (price, time.time())
+            return price
         return 0.0
+
+    def clear_price_cache(self):
+        """Clear the price cache (call at the start of each scan cycle)."""
+        self._price_cache.clear()
 
     # --- Order methods (only used in live mode) ---
 
