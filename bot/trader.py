@@ -26,7 +26,14 @@ class Trader:
         self.rm = risk_manager
         self.positions: list[Position] = []
         self.history: list[dict] = []
+        # Cooldown: signal_key -> timestamp of last trade close
+        self._signal_cooldowns: dict[str, float] = {}
         self._load_state()
+
+    @staticmethod
+    def _signal_key(signal: Signal) -> str:
+        """Generate a unique key for a signal to prevent duplicates."""
+        return f"{signal.symbol}:{signal.direction.value}:{signal.setup_type.value}"
 
     # ------------------------------------------------------------------
     # Persistence
@@ -105,6 +112,61 @@ class Trader:
             logger.warning("Signal rejected: %s", reason)
             return None
 
+        # --- Safety: prevent duplicate positions on the same symbol ---
+        for pos in self.positions:
+            if pos.is_open and pos.symbol == signal.symbol:
+                logger.warning(
+                    "Skipping %s: already have an open position on this symbol",
+                    signal.symbol,
+                )
+                return None
+
+        # --- Safety: signal cooldown (prevent re-trading same setup) ---
+        sig_key = self._signal_key(signal)
+        cooldown_sec = config.SIGNAL_COOLDOWN_HOURS * 3600
+        last_trade = self._signal_cooldowns.get(sig_key, 0)
+        if time.time() - last_trade < cooldown_sec:
+            remaining = cooldown_sec - (time.time() - last_trade)
+            logger.warning(
+                "Signal cooldown active for %s (%.0f min remaining)",
+                sig_key, remaining / 60,
+            )
+            return None
+
+        # --- Safety: validate entry price against current market price ---
+        current_price = self.exchange.get_current_price(signal.symbol)
+        if current_price == 0:
+            logger.error("Cannot get current price for %s", signal.symbol)
+            return None
+
+        deviation = abs(current_price - signal.entry_price) / signal.entry_price
+        if deviation > config.ENTRY_PRICE_MAX_DEVIATION:
+            logger.warning(
+                "Entry price stale for %s: signal=%.4f, market=%.4f, deviation=%.2f%% > %.2f%%",
+                signal.symbol,
+                signal.entry_price,
+                current_price,
+                deviation * 100,
+                config.ENTRY_PRICE_MAX_DEVIATION * 100,
+            )
+            return None
+
+        # --- Safety: verify TP hasn't already been reached ---
+        take_profit = signal.targets[0].price if signal.targets else 0
+        if take_profit > 0:
+            if signal.direction == Direction.LONG and current_price >= take_profit:
+                logger.warning(
+                    "TP already reached for LONG %s: price=%.4f >= tp=%.4f",
+                    signal.symbol, current_price, take_profit,
+                )
+                return None
+            elif signal.direction == Direction.SHORT and current_price <= take_profit:
+                logger.warning(
+                    "TP already reached for SHORT %s: price=%.4f <= tp=%.4f",
+                    signal.symbol, current_price, take_profit,
+                )
+                return None
+
         # Calculate position size
         sizing = self.rm.calculate_position_size(signal)
         if sizing["size"] == 0:
@@ -114,8 +176,8 @@ class Trader:
         # Set leverage
         self.exchange.set_leverage(signal.symbol, sizing["leverage"])
 
-        # Determine take profit (first target)
-        take_profit = signal.targets[0].price if signal.targets else 0
+        # Use current market price as actual entry in paper mode
+        actual_entry = current_price if config.TRADING_MODE != "live" else signal.entry_price
 
         # Place order
         side = "buy" if signal.direction == Direction.LONG else "sell"
@@ -138,12 +200,12 @@ class Trader:
             logger.error("Failed to place order for %s", signal.symbol)
             return None
 
-        # Create position record
+        # Create position record (use actual market price for realistic paper trading)
         position = Position(
             id=str(uuid.uuid4())[:8],
             symbol=signal.symbol,
             direction=signal.direction,
-            entry_price=signal.entry_price,
+            entry_price=actual_entry,
             size=sizing["size_base"],
             margin=sizing["margin"],
             leverage=sizing["leverage"],
@@ -157,9 +219,10 @@ class Trader:
         self._save_state()
 
         logger.info(
-            "OPENED %s %s | entry=%.2f | sl=%.2f | tp=%.2f | margin=$%.2f | x%d",
+            "OPENED %s %s | entry=%.4f (signal=%.4f) | sl=%.4f | tp=%.4f | margin=$%.2f | x%d",
             signal.direction.value.upper(),
             signal.symbol,
+            actual_entry,
             signal.entry_price,
             signal.stop_loss,
             take_profit,
@@ -222,6 +285,12 @@ class Trader:
             self.rm.record_loss(pos.pnl)
 
         self.rm.update_balance(self.rm.balance + pos.pnl)
+
+        # Record signal cooldown to prevent re-trading the same setup
+        if pos.signal:
+            sig_key = self._signal_key(pos.signal)
+            self._signal_cooldowns[sig_key] = time.time()
+            logger.info("Signal cooldown set for %s (%dh)", sig_key, config.SIGNAL_COOLDOWN_HOURS)
 
         # Record to history
         self.history.append({

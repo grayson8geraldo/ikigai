@@ -17,11 +17,15 @@ RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.08"))
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "3"))
 MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", "3.0"))
 
+# --- Signal safety ---
+SIGNAL_COOLDOWN_HOURS = int(os.getenv("SIGNAL_COOLDOWN_HOURS", "4"))
+ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.015"))
+
 # --- Top-20 coins to scan ---
 SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
     "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "LINK/USDT", "DOT/USDT",
-    "NEAR/USDT", "SUI/USDT", "TON/USDT", "MATIC/USDT", "UNI/USDT",
+    "NEAR/USDT", "SUI/USDT", "TON/USDT", "POL/USDT", "UNI/USDT",
     "ATOM/USDT", "FIL/USDT", "APT/USDT", "ARB/USDT", "OP/USDT",
 ]
 

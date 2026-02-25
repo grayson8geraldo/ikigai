@@ -3,11 +3,15 @@
 import ccxt
 import pandas as pd
 import logging
+import time
 from typing import Optional
 
 import config
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+BACKOFF_BASE = 2  # seconds
 
 
 class Exchange:
@@ -24,6 +28,27 @@ class Exchange:
 
         self.client = ccxt.bybit(params)
 
+    def _retry(self, func, description: str):
+        """Execute a function with retry and exponential backoff on network errors."""
+        for attempt in range(MAX_RETRIES):
+            try:
+                return func()
+            except (ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeNotAvailable) as e:
+                wait = BACKOFF_BASE ** (attempt + 1)
+                logger.warning(
+                    "%s failed (attempt %d/%d): %s — retrying in %ds",
+                    description, attempt + 1, MAX_RETRIES, e, wait,
+                )
+                time.sleep(wait)
+            except ccxt.BadSymbol as e:
+                logger.error("%s: invalid symbol — %s", description, e)
+                return None
+            except Exception as e:
+                logger.error("%s failed: %s", description, e)
+                return None
+        logger.error("%s failed after %d retries", description, MAX_RETRIES)
+        return None
+
     def fetch_ohlcv(
         self,
         symbol: str,
@@ -31,10 +56,11 @@ class Exchange:
         limit: int = 200,
     ) -> pd.DataFrame:
         """Fetch OHLCV candles and return as DataFrame."""
-        try:
-            data = self.client.fetch_ohlcv(symbol, timeframe, limit=limit)
-        except Exception as e:
-            logger.error("Failed to fetch %s %s: %s", symbol, timeframe, e)
+        data = self._retry(
+            lambda: self.client.fetch_ohlcv(symbol, timeframe, limit=limit),
+            f"fetch_ohlcv({symbol} {timeframe})",
+        )
+        if data is None:
             return pd.DataFrame()
 
         df = pd.DataFrame(
@@ -45,11 +71,10 @@ class Exchange:
 
     def fetch_ticker(self, symbol: str) -> Optional[dict]:
         """Fetch current ticker for a symbol."""
-        try:
-            return self.client.fetch_ticker(symbol)
-        except Exception as e:
-            logger.error("Failed to fetch ticker %s: %s", symbol, e)
-            return None
+        return self._retry(
+            lambda: self.client.fetch_ticker(symbol),
+            f"fetch_ticker({symbol})",
+        )
 
     def get_current_price(self, symbol: str) -> float:
         """Get current price for a symbol."""
