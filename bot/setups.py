@@ -54,27 +54,31 @@ def check_zigzag_setup(
     else:
         return None  # no trades in sideways market
 
-    # Entry: end of wave C
-    entry_price = wc.end.price
+    # Wave C reference level (structural level for SL)
+    wave_c_level = wc.end.price
 
-    # Check if current price is near wave C end (within 3%)
+    # Check if current price is near wave C end (within max deviation)
     if current_price > 0:
-        dist = abs(current_price - entry_price) / entry_price
-        if dist > 0.03:
+        dist = abs(current_price - wave_c_level) / wave_c_level
+        if dist > config.ENTRY_PRICE_MAX_DEVIATION:
             return None
 
-    # Stop loss: beyond the extreme of wave C, with minimum distance enforced
-    min_stop_pct = config.MIN_STOP_DISTANCE_PCT  # minimum stop distance (e.g. 1.5%)
+    # Entry: use current market price (bot trades at market, not at historical wave level)
+    entry_price = current_price if current_price > 0 else wave_c_level
+
+    # Stop loss: based on wave structure (invalidation of the pattern)
+    min_stop_pct = config.MIN_STOP_DISTANCE_PCT
 
     if direction == Direction.LONG:
-        # Use the lowest point of C as stop
+        # SL below the lowest point of wave C
         stop_loss = min(wc.end.price, wc.start.price) * 0.995
-        # Enforce minimum stop distance
+        # Enforce minimum stop distance from actual entry
         if entry_price > 0 and (entry_price - stop_loss) / entry_price < min_stop_pct:
             stop_loss = entry_price * (1 - min_stop_pct)
     else:
+        # SL above the highest point of wave C
         stop_loss = max(wc.end.price, wc.start.price) * 1.005
-        # Enforce minimum stop distance
+        # Enforce minimum stop distance from actual entry
         if entry_price > 0 and (stop_loss - entry_price) / entry_price < min_stop_pct:
             stop_loss = entry_price * (1 + min_stop_pct)
 
@@ -102,7 +106,7 @@ def check_zigzag_setup(
     factors = [
         f"Trend: {trend.value}",
         f"Zigzag ABC correction (confidence: {zigzag.confidence:.0%})",
-        f"Wave C completed at {wc.end.price:.2f}",
+        f"Wave C level: {wave_c_level:.4f}, entry at market: {entry_price:.4f}",
         f"R:R = {rr:.1f}:1",
     ]
 
@@ -153,32 +157,34 @@ def check_diagonal_setup(
     else:
         direction = Direction.LONG  # descending diagonal → long reversal
 
-    # Entry: 0.618 of wave 3 from the end of wave 4
-    # (expected completion zone of wave 5)
+    # Expected completion zone of wave 5
     w3_length = w3.length
-    min_stop_pct = config.MIN_STOP_DISTANCE_PCT  # minimum stop distance (e.g. 1.5%)
+    min_stop_pct = config.MIN_STOP_DISTANCE_PCT
 
     if direction == Direction.SHORT:
         # Ascending diagonal: wave 5 end expected at w4.end + 0.618 * w3
         expected_w5_end = w4.end.price + w3_length * 0.618
-        entry_price = expected_w5_end
         stop_loss = w4.end.price + w3_length * 1.05  # beyond wave 3 projection
-        # Enforce minimum stop distance
+    else:
+        expected_w5_end = w4.end.price - w3_length * 0.618
+        stop_loss = w4.end.price - w3_length * 1.05
+
+    # Check if current price is near expected wave 5 end
+    if current_price > 0:
+        dist = abs(current_price - expected_w5_end) / expected_w5_end
+        if dist > config.ENTRY_PRICE_MAX_DEVIATION:
+            return None
+
+    # Use current market price as entry
+    entry_price = current_price if current_price > 0 else expected_w5_end
+
+    # Enforce minimum stop distance from actual entry
+    if direction == Direction.SHORT:
         if entry_price > 0 and (stop_loss - entry_price) / entry_price < min_stop_pct:
             stop_loss = entry_price * (1 + min_stop_pct)
     else:
-        expected_w5_end = w4.end.price - w3_length * 0.618
-        entry_price = expected_w5_end
-        stop_loss = w4.end.price - w3_length * 1.05
-        # Enforce minimum stop distance
         if entry_price > 0 and (entry_price - stop_loss) / entry_price < min_stop_pct:
             stop_loss = entry_price * (1 - min_stop_pct)
-
-    # Check if current price is near expected entry
-    if current_price > 0:
-        dist = abs(current_price - entry_price) / entry_price
-        if dist > 0.05:
-            return None
 
     # Target: base of the diagonal (start of wave 1) — gives 4-5:1 R:R
     target_price = w1.start.price
@@ -240,7 +246,7 @@ def check_triangle_setup(
     wa, wb, wc, wd, we = triangle.waves
 
     # Direction based on trend (triangle = continuation pattern in symmetric case)
-    min_stop_pct = 0.015  # minimum 1.5% stop distance to avoid micro-stops
+    min_stop_pct = config.MIN_STOP_DISTANCE_PCT
 
     if trend == Trend.UP:
         direction = Direction.LONG
@@ -248,7 +254,8 @@ def check_triangle_setup(
         breakout_level = max(wb.start.price, wb.end.price)
         if current_price > 0 and current_price < breakout_level:
             return None  # not yet broken out
-        entry_price = breakout_level
+        # Use current price as entry (already past breakout)
+        entry_price = current_price if current_price > 0 else breakout_level
         stop_loss = min(we.start.price, we.end.price) * 0.995
         # Enforce minimum stop distance
         if entry_price > 0 and (entry_price - stop_loss) / entry_price < min_stop_pct:
@@ -258,7 +265,7 @@ def check_triangle_setup(
         breakout_level = min(wb.start.price, wb.end.price)
         if current_price > 0 and current_price > breakout_level:
             return None
-        entry_price = breakout_level
+        entry_price = current_price if current_price > 0 else breakout_level
         stop_loss = max(we.start.price, we.end.price) * 1.005
         # Enforce minimum stop distance
         if entry_price > 0 and (stop_loss - entry_price) / entry_price < min_stop_pct:
@@ -266,13 +273,13 @@ def check_triangle_setup(
     else:
         return None
 
-    # Potential = distance of wave A, projected from breakout point
+    # Potential = distance of wave A, projected from breakout point (structural target)
     wave_a_length = wa.length
 
     if direction == Direction.LONG:
-        target_price = entry_price + wave_a_length
+        target_price = breakout_level + wave_a_length
     else:
-        target_price = entry_price - wave_a_length
+        target_price = breakout_level - wave_a_length
 
     risk = abs(entry_price - stop_loss)
     if risk == 0:

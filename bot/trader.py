@@ -231,29 +231,28 @@ class Trader:
         # Use current market price as actual entry in paper mode
         actual_entry = current_price if config.TRADING_MODE != "live" else signal.entry_price
 
-        # --- Recalculate SL/TP when actual entry differs from signal entry ---
+        # --- Use wave-based SL/TP from signal directly ---
+        # SL/TP are structural levels (wave invalidation points) and should NOT
+        # be adjusted proportionally when entry price shifts — that destroys
+        # the structural meaning of the stop level.
         actual_sl = signal.stop_loss
         actual_tp = take_profit
-        if actual_entry != signal.entry_price and signal.entry_price > 0:
-            # Maintain the same risk/reward percentages relative to actual entry
-            sl_pct = abs(signal.entry_price - signal.stop_loss) / signal.entry_price
-            if signal.direction == Direction.LONG:
-                actual_sl = actual_entry * (1 - sl_pct)
-                if take_profit > 0:
-                    tp_pct = (take_profit - signal.entry_price) / signal.entry_price
-                    actual_tp = actual_entry * (1 + tp_pct)
-            else:
-                actual_sl = actual_entry * (1 + sl_pct)
-                if take_profit > 0:
-                    tp_pct = (signal.entry_price - take_profit) / signal.entry_price
-                    actual_tp = actual_entry * (1 - tp_pct)
-            logger.info(
-                "Adjusted SL/TP for %s: SL %.4f→%.4f, TP %.4f→%.4f (entry %.4f→%.4f)",
-                signal.symbol, signal.stop_loss, actual_sl,
-                take_profit, actual_tp, signal.entry_price, actual_entry,
-            )
 
-        # --- Enforce minimum stop distance after any adjustments ---
+        # Validate: SL must be on the correct side of actual entry
+        if signal.direction == Direction.LONG and actual_sl >= actual_entry:
+            logger.warning(
+                "Rejecting %s LONG: SL %.4f >= entry %.4f (SL above entry)",
+                signal.symbol, actual_sl, actual_entry,
+            )
+            return None
+        if signal.direction == Direction.SHORT and actual_sl <= actual_entry:
+            logger.warning(
+                "Rejecting %s SHORT: SL %.4f <= entry %.4f (SL below entry)",
+                signal.symbol, actual_sl, actual_entry,
+            )
+            return None
+
+        # --- Enforce minimum stop distance ---
         min_stop_pct = config.MIN_STOP_DISTANCE_PCT
         if actual_entry > 0:
             current_sl_pct = abs(actual_entry - actual_sl) / actual_entry
@@ -264,10 +263,30 @@ class Trader:
                 else:
                     actual_sl = actual_entry * (1 + min_stop_pct)
                 logger.info(
-                    "Enforced min stop distance for %s: SL %.4f→%.4f (%.2f%% → %.2f%%)",
+                    "Enforced min stop distance for %s: SL %.4f->%.4f (%.2f%% -> %.2f%%)",
                     signal.symbol, old_sl, actual_sl,
                     current_sl_pct * 100, min_stop_pct * 100,
                 )
+
+        # --- Validate actual R:R from market entry ---
+        actual_risk = abs(actual_entry - actual_sl)
+        actual_reward = abs(actual_tp - actual_entry) if actual_tp > 0 else 0
+        if actual_risk > 0 and actual_reward > 0:
+            actual_rr = actual_reward / actual_risk
+            if actual_rr < config.MIN_RR_RATIO:
+                logger.warning(
+                    "Actual R:R too low for %s: %.1f:1 < %.1f:1 "
+                    "(entry=%.4f, sl=%.4f, tp=%.4f)",
+                    signal.symbol, actual_rr, config.MIN_RR_RATIO,
+                    actual_entry, actual_sl, actual_tp,
+                )
+                return None
+
+        if actual_entry != signal.entry_price:
+            logger.info(
+                "Trade at market for %s: entry %.4f (signal %.4f), SL %.4f, TP %.4f",
+                signal.symbol, actual_entry, signal.entry_price, actual_sl, actual_tp,
+            )
 
         # Place order
         side = "buy" if signal.direction == Direction.LONG else "sell"
