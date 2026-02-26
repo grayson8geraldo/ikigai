@@ -27,6 +27,12 @@ MIN_STOP_DISTANCE_PCT = float(os.getenv("MIN_STOP_DISTANCE_PCT", "0.015"))  # 1.
 # Maximum age (hours) for positions loaded from disk — stale positions are discarded
 MAX_POSITION_AGE_HOURS = int(os.getenv("MAX_POSITION_AGE_HOURS", "48"))
 
+# --- BTC correlation filter ---
+# When enabled, altcoin signals are filtered against BTC trend:
+#   BTC UP   → reject SHORT signals on alts
+#   BTC DOWN → reject LONG signals on alts
+BTC_TREND_FILTER = os.getenv("BTC_TREND_FILTER", "true").lower() in ("true", "1", "yes")
+
 # --- Top-20 coins to scan ---
 SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",

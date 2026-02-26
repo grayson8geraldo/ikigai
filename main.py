@@ -121,6 +121,12 @@ def run_scan_cycle(scanner: Scanner, trader: Trader, auto_trade: bool = False):
 
     # Scan for new signals
     signals = scanner.scan_all()
+
+    # Show BTC trend if filter is active
+    if config.BTC_TREND_FILTER:
+        btc_trend = scanner._btc_trend.value.upper()
+        print(f"\n  BTC trend: {btc_trend}  (altcoin filter: {'active' if btc_trend != 'SIDEWAYS' else 'off'})")
+
     print_signals(signals)
 
     if not signals:

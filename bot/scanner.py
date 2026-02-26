@@ -7,12 +7,14 @@ import config
 from bot.exchange import Exchange
 from bot.wave_analyzer import analyze
 from bot.setups import check_zigzag_setup, check_diagonal_setup, check_triangle_setup
-from bot.models import Signal
+from bot.models import Signal, Direction, Trend
 
 logger = logging.getLogger(__name__)
 
 # Confluence bonus when a signal direction matches a higher-timeframe pattern
 _MTF_CONFLUENCE_BONUS = 0.15
+
+_BTC_SYMBOL = "BTC/USDT"
 
 
 class Scanner:
@@ -20,6 +22,7 @@ class Scanner:
 
     def __init__(self, exchange: Exchange):
         self.exchange = exchange
+        self._btc_trend: Trend = Trend.SIDEWAYS
 
     def scan_symbol(self, symbol: str) -> list[Signal]:
         """Scan a single symbol across working timeframes for setups."""
@@ -95,12 +98,51 @@ class Scanner:
 
         return signals
 
+    def _detect_btc_trend(self) -> Trend:
+        """Analyze BTC/USDT on daily and 4h to determine market-wide trend."""
+        # Daily trend (primary)
+        df_daily = self.exchange.fetch_ohlcv(_BTC_SYMBOL, config.TIMEFRAMES["mid"], limit=200)
+        if df_daily.empty:
+            logger.warning("Cannot fetch BTC daily data, defaulting to SIDEWAYS")
+            return Trend.SIDEWAYS
+
+        daily_analysis = analyze(df_daily)
+        daily_trend = daily_analysis["trend"]
+
+        # 4h trend (confirmation)
+        df_4h = self.exchange.fetch_ohlcv(_BTC_SYMBOL, config.TIMEFRAMES["work"], limit=200)
+        if not df_4h.empty:
+            work_analysis = analyze(df_4h)
+            work_trend = work_analysis["trend"]
+
+            # Both timeframes agree → strong signal
+            if daily_trend == work_trend:
+                logger.info("BTC trend: %s (daily + 4h confirmed)", daily_trend.value)
+                return daily_trend
+
+            # Daily is directional but 4h disagrees → use daily with caution
+            if daily_trend != Trend.SIDEWAYS:
+                logger.info(
+                    "BTC trend: %s (daily), 4h shows %s — using daily",
+                    daily_trend.value, work_trend.value,
+                )
+                return daily_trend
+
+        logger.info("BTC trend: %s (daily only)", daily_trend.value)
+        return daily_trend
+
     def scan_all(self) -> list[Signal]:
         """Scan all configured symbols and return all valid signals."""
         all_signals: list[Signal] = []
 
         # Clear price cache at the start of each full scan cycle
         self.exchange.clear_price_cache()
+
+        # Detect BTC trend BEFORE scanning altcoins
+        if config.BTC_TREND_FILTER:
+            self._btc_trend = self._detect_btc_trend()
+        else:
+            self._btc_trend = Trend.SIDEWAYS
 
         for symbol in config.SYMBOLS:
             logger.info("Scanning %s ...", symbol)
@@ -111,6 +153,41 @@ class Scanner:
                 logger.error("Error scanning %s: %s", symbol, e)
             # Rate limiting
             time.sleep(0.5)
+
+        # Filter signals against BTC trend (altcoins only)
+        if config.BTC_TREND_FILTER and self._btc_trend != Trend.SIDEWAYS:
+            filtered = []
+            for sig in all_signals:
+                # Don't filter BTC itself
+                if sig.symbol == _BTC_SYMBOL:
+                    filtered.append(sig)
+                    continue
+
+                # BTC UP → reject SHORT on alts
+                if self._btc_trend == Trend.UP and sig.direction == Direction.SHORT:
+                    logger.info(
+                        "Filtered %s %s: BTC trend is UP, rejecting altcoin shorts",
+                        sig.symbol, sig.direction.value,
+                    )
+                    continue
+
+                # BTC DOWN → reject LONG on alts
+                if self._btc_trend == Trend.DOWN and sig.direction == Direction.LONG:
+                    logger.info(
+                        "Filtered %s %s: BTC trend is DOWN, rejecting altcoin longs",
+                        sig.symbol, sig.direction.value,
+                    )
+                    continue
+
+                filtered.append(sig)
+
+            rejected = len(all_signals) - len(filtered)
+            if rejected > 0:
+                logger.info(
+                    "BTC trend filter (%s): rejected %d/%d signals",
+                    self._btc_trend.value, rejected, len(all_signals),
+                )
+            all_signals = filtered
 
         # Sort by confidence (highest first)
         all_signals.sort(key=lambda s: s.confidence, reverse=True)
