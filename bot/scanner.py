@@ -99,37 +99,65 @@ class Scanner:
         return signals
 
     def _detect_btc_trend(self) -> Trend:
-        """Analyze BTC/USDT on daily and 4h to determine market-wide trend."""
-        # Daily trend (primary)
+        """Analyze BTC/USDT on multiple timeframes + price momentum.
+
+        Uses daily trend, 4h trend, and 4h price momentum (last 12h).
+        Price momentum overrides when trend analysis lags behind a reversal.
+        """
+        # Daily trend (long-term context)
         df_daily = self.exchange.fetch_ohlcv(_BTC_SYMBOL, config.TIMEFRAMES["mid"], limit=200)
         if df_daily.empty:
             logger.warning("Cannot fetch BTC daily data, defaulting to SIDEWAYS")
             return Trend.SIDEWAYS
 
-        daily_analysis = analyze(df_daily)
-        daily_trend = daily_analysis["trend"]
+        daily_trend = analyze(df_daily)["trend"]
 
-        # 4h trend (confirmation)
+        # 4h trend + price momentum
         df_4h = self.exchange.fetch_ohlcv(_BTC_SYMBOL, config.TIMEFRAMES["work"], limit=200)
-        if not df_4h.empty:
-            work_analysis = analyze(df_4h)
-            work_trend = work_analysis["trend"]
+        if df_4h.empty:
+            logger.info("BTC trend: %s (daily only)", daily_trend.value)
+            return daily_trend
 
-            # Both timeframes agree → strong signal
-            if daily_trend == work_trend:
-                logger.info("BTC trend: %s (daily + 4h confirmed)", daily_trend.value)
-                return daily_trend
+        work_trend = analyze(df_4h)["trend"]
 
-            # Daily is directional but 4h disagrees → use daily with caution
-            if daily_trend != Trend.SIDEWAYS:
-                logger.info(
-                    "BTC trend: %s (daily), 4h shows %s — using daily",
-                    daily_trend.value, work_trend.value,
-                )
-                return daily_trend
+        # 4h price momentum: last 3 candles (~12 hours)
+        momentum = Trend.SIDEWAYS
+        if len(df_4h) >= 4:
+            recent_close = float(df_4h["close"].iloc[-1])
+            past_close = float(df_4h["close"].iloc[-4])
+            change_pct = (recent_close - past_close) / past_close
 
-        logger.info("BTC trend: %s (daily only)", daily_trend.value)
-        return daily_trend
+            if change_pct > 0.01:       # BTC up >1% in 12h
+                momentum = Trend.UP
+            elif change_pct < -0.01:     # BTC down >1% in 12h
+                momentum = Trend.DOWN
+
+        # Decision logic (priority order):
+        # 1. Daily + 4h agree → strong signal
+        if daily_trend == work_trend and daily_trend != Trend.SIDEWAYS:
+            result = daily_trend
+        # 2. 4h trend matches momentum → recent consensus
+        elif work_trend == momentum and work_trend != Trend.SIDEWAYS:
+            result = work_trend
+        # 3. Daily matches momentum → confirmed despite 4h lag
+        elif daily_trend == momentum and daily_trend != Trend.SIDEWAYS:
+            result = daily_trend
+        # 4. Momentum is clear but trends are mixed → trust price action
+        elif momentum != Trend.SIDEWAYS:
+            result = momentum
+        # 5. Single clear trend (no momentum) → use it
+        elif work_trend != Trend.SIDEWAYS:
+            result = work_trend
+        elif daily_trend != Trend.SIDEWAYS:
+            result = daily_trend
+        else:
+            result = Trend.SIDEWAYS
+
+        logger.info(
+            "BTC trend: %s (daily=%s, 4h=%s, momentum=%s)",
+            result.value, daily_trend.value, work_trend.value, momentum.value,
+        )
+        return result
 
     def scan_all(self) -> list[Signal]:
         """Scan all configured symbols and return all valid signals."""
