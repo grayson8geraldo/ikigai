@@ -83,6 +83,7 @@ def check_zigzag_setup(
             stop_loss = entry_price * (1 + min_stop_pct)
 
     # Target: trend-based extension from the wave before zigzag
+    # Uses profile-specific ratios (closer for intraday, wider for swing)
     targets = fibonacci.trend_based_extension(
         point_a=SwingPoint(
             index=0, price=wa.start.price - wa.length * (1 if direction == Direction.LONG else -1),
@@ -90,7 +91,7 @@ def check_zigzag_setup(
         ),
         point_b=wa.start,
         point_c=wc.end,
-        ratios=[1.618, 2.618, 3.618],
+        ratios=config.TARGET_RATIOS_ZIGZAG,
     )
 
     # Calculate R:R
@@ -290,18 +291,15 @@ def check_triangle_setup(
     if rr < config.MIN_RR_RATIO:
         return None
 
-    # Also calculate trend-based Fibonacci target
-    targets = [
-        FibLevel(ratio=1.0, price=target_price, label="Triangle potential (normal)"),
-    ]
-
-    # Log-scale potential (more optimistic)
-    if entry_price > 0 and wa.start.price > 0:
-        log_ratio = wave_a_length / wa.start.price
-        log_target = entry_price * (1 + log_ratio) if direction == Direction.LONG \
-            else entry_price * (1 - log_ratio)
+    # Targets based on wave A projection
+    targets = []
+    for ratio in config.TARGET_RATIOS_TRIANGLE:
+        if direction == Direction.LONG:
+            t_price = breakout_level + wave_a_length * ratio
+        else:
+            t_price = breakout_level - wave_a_length * ratio
         targets.append(
-            FibLevel(ratio=1.618, price=log_target, label="Triangle potential (log)")
+            FibLevel(ratio=ratio, price=t_price, label=f"Triangle {ratio:.3f}")
         )
 
     factors = [

@@ -357,6 +357,16 @@ class Trader:
 
             pos.close_price = price  # for unrealized PnL tracking
 
+            # Check max hold time — auto-close stale positions
+            hold_hours = (time.time() - pos.open_time) / 3600
+            if hold_hours > config.MAX_POSITION_AGE_HOURS:
+                logger.info(
+                    "Max hold time (%.1fh > %dh) for %s — closing at market",
+                    hold_hours, config.MAX_POSITION_AGE_HOURS, pos.symbol,
+                )
+                self._close_position(pos, price, "MAX HOLD TIME")
+                continue
+
             # Check stop loss
             hit_stop = False
             hit_target = False

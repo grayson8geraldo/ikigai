@@ -42,16 +42,21 @@ logger = logging.getLogger("ikigai")
 # ---------------------------------------------------------------------------
 
 def print_banner():
+    profile = config.TRADING_PROFILE.upper()
+    tfs = "/".join(config.TIMEFRAMES.values())
     print("""
 ╔══════════════════════════════════════════════════╗
-║          IKIGAI Trading Bot v1.0                 ║
+║          IKIGAI Trading Bot v2.0                 ║
 ║    Elliott Wave + Fibonacci Strategy             ║
 ║                                                  ║
 ║    Mode: {mode:<10s}  Deposit: ${deposit:<10.2f}  ║
+║    Profile: {profile:<8s}  TFs: {tfs:<16s}    ║
 ╚══════════════════════════════════════════════════╝
 """.format(
         mode=config.TRADING_MODE.upper(),
         deposit=config.PAPER_DEPOSIT,
+        profile=profile,
+        tfs=tfs,
     ))
 
 
@@ -161,8 +166,8 @@ def main():
     parser = argparse.ArgumentParser(description="IKIGAI Trading Bot")
     parser.add_argument("--loop", action="store_true",
                         help="Run continuously (scan every 15 minutes)")
-    parser.add_argument("--interval", type=int, default=15,
-                        help="Scan interval in minutes (default: 15)")
+    parser.add_argument("--interval", type=int, default=config.DEFAULT_SCAN_INTERVAL,
+                        help=f"Scan interval in minutes (default: {config.DEFAULT_SCAN_INTERVAL})")
     parser.add_argument("--status", action="store_true",
                         help="Show current positions and statistics")
     parser.add_argument("--trade", action="store_true",

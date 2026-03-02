@@ -1,172 +1,256 @@
-"""Market scanner — scans all configured symbols for trading setups."""
+"""Market scanner — hierarchical multi-timeframe wave analysis.
+
+Scans from higher timeframes to lower:
+  trend TF (4h) → work TF (1h) → entry TF (15m)
+
+Each level builds a WaveContext that is passed down so that
+lower-TF signals are validated against the larger wave structure.
+"""
 
 import logging
 import time
+from typing import Optional
 
 import config
 from bot.exchange import Exchange
-from bot.wave_analyzer import analyze
+from bot.wave_analyzer import analyze, get_wave_context
 from bot.setups import check_zigzag_setup, check_diagonal_setup, check_triangle_setup
-from bot.models import Signal, Direction, Trend
+from bot.models import Signal, Direction, Trend, WaveContext
 
 logger = logging.getLogger(__name__)
 
-# Confluence bonus when a signal direction matches a higher-timeframe pattern
-_MTF_CONFLUENCE_BONUS = 0.15
+# Confidence bonuses for hierarchical alignment
+_TREND_CONTEXT_BONUS = 0.15   # entry signal aligns with trend-TF context
+_WORK_CONTEXT_BONUS = 0.10    # entry signal aligns with work-TF context
+_MTF_DIRECTION_BONUS = 0.10   # entry signal direction confirmed on work TF
 
 _BTC_SYMBOL = "BTC/USDT"
 
 
 class Scanner:
-    """Scans multiple symbols and timeframes for trading setups."""
+    """Scans multiple symbols with hierarchical wave analysis."""
 
     def __init__(self, exchange: Exchange):
         self.exchange = exchange
         self._btc_trend: Trend = Trend.SIDEWAYS
 
+    # ------------------------------------------------------------------
+    # Per-symbol hierarchical scan
+    # ------------------------------------------------------------------
+
     def scan_symbol(self, symbol: str) -> list[Signal]:
-        """Scan a single symbol across working timeframes for setups."""
+        """Scan a single symbol using 3-level hierarchical analysis.
+
+        Level 1 (trend TF, e.g. 4h):  determine trend + wave context
+        Level 2 (work TF, e.g. 1h):   detect patterns, build work context
+        Level 3 (entry TF, e.g. 15m):  find entry signals, validate vs context
+        """
         signals: list[Signal] = []
 
-        # 1. Get global trend from daily chart
-        df_daily = self.exchange.fetch_ohlcv(symbol, config.TIMEFRAMES["mid"], limit=200)
-        if df_daily.empty:
+        # ── Level 1: Trend timeframe ──────────────────────────────────
+        df_trend = self.exchange.fetch_ohlcv(
+            symbol, config.TIMEFRAMES["trend"], limit=200,
+        )
+        if df_trend.empty:
             return signals
 
-        global_analysis = analyze(df_daily)
-        trend = global_analysis["trend"]
+        analysis_trend = analyze(df_trend)
+        trend = analysis_trend["trend"]
+        ctx_trend = get_wave_context(analysis_trend, config.TIMEFRAMES["trend"])
 
-        # 2. Fetch current price ONCE per symbol
+        if ctx_trend.wave_label:
+            logger.info(
+                "%s trend-TF context: %s → expects %s (conf %.0f%%)",
+                symbol,
+                ctx_trend.wave_label,
+                ctx_trend.expected_direction.value if ctx_trend.expected_direction else "?",
+                ctx_trend.confidence * 100,
+            )
+
+        # Fetch current price ONCE per symbol
         current_price = self.exchange.get_current_price(symbol)
 
-        # 3. Collect signals per timeframe (higher TF first for confluence)
-        tf_signals: dict[str, list[Signal]] = {}
+        # ── Level 2: Work timeframe ───────────────────────────────────
+        df_work = self.exchange.fetch_ohlcv(
+            symbol, config.TIMEFRAMES["work"], limit=200,
+        )
+        if df_work.empty:
+            return signals
 
-        for tf_name in ["work", "entry"]:
-            tf = config.TIMEFRAMES[tf_name]
-            df = self.exchange.fetch_ohlcv(symbol, tf, limit=200)
-            if df.empty:
-                continue
+        analysis_work = analyze(df_work)
+        ctx_work = get_wave_context(analysis_work, config.TIMEFRAMES["work"])
 
-            analysis = analyze(df)
-            tf_sigs: list[Signal] = []
+        # Generate signals from work-TF patterns (with trend context)
+        work_signals = self._generate_signals(
+            analysis_work, trend, current_price, symbol,
+            config.TIMEFRAMES["work"], ctx_trend,
+        )
 
-            # Check Setup A: Zigzag + Breakout
-            for zigzag in analysis["zigzags"]:
-                signal = check_zigzag_setup(
-                    zigzag, trend, current_price, symbol, tf,
-                )
-                if signal:
-                    tf_sigs.append(signal)
+        # ── Level 3: Entry timeframe ──────────────────────────────────
+        df_entry = self.exchange.fetch_ohlcv(
+            symbol, config.TIMEFRAMES["entry"], limit=200,
+        )
+        entry_signals: list[Signal] = []
+        if not df_entry.empty:
+            analysis_entry = analyze(df_entry)
+            entry_signals = self._generate_signals(
+                analysis_entry, trend, current_price, symbol,
+                config.TIMEFRAMES["entry"], ctx_work,
+            )
 
-            # Check Setup B: Ending Diagonal
-            for diagonal in analysis["diagonals"]:
-                signal = check_diagonal_setup(
-                    diagonal, current_price, symbol, tf,
-                )
-                if signal:
-                    tf_sigs.append(signal)
+            # Boost entry signals that align with trend-TF context
+            for sig in entry_signals:
+                if (ctx_trend.expected_direction
+                        and sig.direction == ctx_trend.expected_direction):
+                    sig.confidence = min(sig.confidence + _TREND_CONTEXT_BONUS, 1.0)
+                    sig.factors.append(
+                        f"Hierarchical: {config.TIMEFRAMES['trend']} "
+                        f"{ctx_trend.wave_label} expects {sig.direction.value}"
+                    )
 
-            # Check Setup C: Triangle + Breakout
-            for triangle in analysis["triangles"]:
-                signal = check_triangle_setup(
-                    triangle, trend, current_price, symbol, tf,
-                )
-                if signal:
-                    tf_sigs.append(signal)
-
-            tf_signals[tf_name] = tf_sigs
-
-        # 4. Multi-timeframe confluence: boost entry-TF signals confirmed by work-TF
-        work_directions = set()
-        for sig in tf_signals.get("work", []):
-            work_directions.add(sig.direction)
-
-        for sig in tf_signals.get("entry", []):
+        # Boost entry signals whose direction matches a work-TF signal
+        work_directions = {s.direction for s in work_signals}
+        for sig in entry_signals:
             if sig.direction in work_directions:
-                sig.confidence = min(sig.confidence + _MTF_CONFLUENCE_BONUS, 1.0)
+                sig.confidence = min(sig.confidence + _MTF_DIRECTION_BONUS, 1.0)
                 sig.factors.append(
-                    f"Multi-TF confluence: {sig.direction.value} confirmed on {config.TIMEFRAMES['work']}"
+                    f"Multi-TF confluence: {sig.direction.value} "
+                    f"confirmed on {config.TIMEFRAMES['work']}"
                 )
 
-        # Merge all timeframe signals
-        for tf_sigs in tf_signals.values():
-            signals.extend(tf_sigs)
+        # Merge and deduplicate
+        all_sigs = work_signals + entry_signals
+        return _deduplicate_signals(all_sigs)
 
-        # 5. Deduplicate: keep only the best signal per symbol+direction
-        signals = _deduplicate_signals(signals)
+    # ------------------------------------------------------------------
+    # Signal generation helper
+    # ------------------------------------------------------------------
 
-        return signals
+    def _generate_signals(
+        self,
+        analysis: dict,
+        trend: Trend,
+        current_price: float,
+        symbol: str,
+        timeframe: str,
+        context: Optional[WaveContext] = None,
+    ) -> list[Signal]:
+        """Generate signals from analysis, optionally boosted by higher-TF context."""
+        sigs: list[Signal] = []
+
+        for zigzag in analysis["zigzags"]:
+            signal = check_zigzag_setup(
+                zigzag, trend, current_price, symbol, timeframe,
+            )
+            if signal:
+                self._apply_context_bonus(signal, context)
+                sigs.append(signal)
+
+        for diagonal in analysis["diagonals"]:
+            signal = check_diagonal_setup(
+                diagonal, current_price, symbol, timeframe,
+            )
+            if signal:
+                self._apply_context_bonus(signal, context)
+                sigs.append(signal)
+
+        for triangle in analysis["triangles"]:
+            signal = check_triangle_setup(
+                triangle, trend, current_price, symbol, timeframe,
+            )
+            if signal:
+                self._apply_context_bonus(signal, context)
+                sigs.append(signal)
+
+        return sigs
+
+    @staticmethod
+    def _apply_context_bonus(signal: Signal, context: Optional[WaveContext]):
+        """Boost signal confidence if it aligns with higher-TF wave context."""
+        if not context or not context.expected_direction:
+            return
+        if signal.direction == context.expected_direction:
+            signal.confidence = min(signal.confidence + _WORK_CONTEXT_BONUS, 1.0)
+            signal.factors.append(
+                f"Aligned with {context.timeframe} {context.wave_label}"
+            )
+
+    # ------------------------------------------------------------------
+    # BTC trend detection
+    # ------------------------------------------------------------------
 
     def _detect_btc_trend(self) -> Trend:
-        """Analyze BTC/USDT on multiple timeframes + price momentum.
+        """Analyze BTC/USDT using trend + work timeframes + price momentum.
 
-        Uses daily trend, 4h trend, and 4h price momentum (last 12h).
-        Price momentum overrides when trend analysis lags behind a reversal.
+        Adapts automatically to the trading profile:
+          intraday: 4h (trend) + 1h (work) + 1h momentum
+          swing:    1d (trend) + 4h (work) + 4h momentum
         """
-        # Daily trend (long-term context)
-        df_daily = self.exchange.fetch_ohlcv(_BTC_SYMBOL, config.TIMEFRAMES["mid"], limit=200)
-        if df_daily.empty:
-            logger.warning("Cannot fetch BTC daily data, defaulting to SIDEWAYS")
+        # Trend-TF analysis
+        df_trend = self.exchange.fetch_ohlcv(
+            _BTC_SYMBOL, config.TIMEFRAMES["trend"], limit=200,
+        )
+        if df_trend.empty:
+            logger.warning("Cannot fetch BTC trend data, defaulting to SIDEWAYS")
             return Trend.SIDEWAYS
 
-        daily_trend = analyze(df_daily)["trend"]
+        trend_result = analyze(df_trend)["trend"]
 
-        # 4h trend + price momentum
-        df_4h = self.exchange.fetch_ohlcv(_BTC_SYMBOL, config.TIMEFRAMES["work"], limit=200)
-        if df_4h.empty:
-            logger.info("BTC trend: %s (daily only)", daily_trend.value)
-            return daily_trend
+        # Work-TF analysis + price momentum
+        df_work = self.exchange.fetch_ohlcv(
+            _BTC_SYMBOL, config.TIMEFRAMES["work"], limit=200,
+        )
+        if df_work.empty:
+            logger.info("BTC trend: %s (trend-TF only)", trend_result.value)
+            return trend_result
 
-        work_trend = analyze(df_4h)["trend"]
+        work_result = analyze(df_work)["trend"]
 
-        # 4h price momentum: last 3 candles (~12 hours)
+        # Price momentum: last 3 candles on work TF
         momentum = Trend.SIDEWAYS
-        if len(df_4h) >= 4:
-            recent_close = float(df_4h["close"].iloc[-1])
-            past_close = float(df_4h["close"].iloc[-4])
+        if len(df_work) >= 4:
+            recent_close = float(df_work["close"].iloc[-1])
+            past_close = float(df_work["close"].iloc[-4])
             change_pct = (recent_close - past_close) / past_close
 
-            if change_pct > 0.01:       # BTC up >1% in 12h
+            if change_pct > 0.01:
                 momentum = Trend.UP
-            elif change_pct < -0.01:     # BTC down >1% in 12h
+            elif change_pct < -0.01:
                 momentum = Trend.DOWN
 
-        # Decision logic (priority order):
-        # 1. Daily + 4h agree → strong signal
-        if daily_trend == work_trend and daily_trend != Trend.SIDEWAYS:
-            result = daily_trend
-        # 2. 4h trend matches momentum → recent consensus
-        elif work_trend == momentum and work_trend != Trend.SIDEWAYS:
-            result = work_trend
-        # 3. Daily matches momentum → confirmed despite 4h lag
-        elif daily_trend == momentum and daily_trend != Trend.SIDEWAYS:
-            result = daily_trend
-        # 4. Momentum is clear but trends are mixed → trust price action
+        # Decision logic (priority order)
+        if trend_result == work_result and trend_result != Trend.SIDEWAYS:
+            result = trend_result
+        elif work_result == momentum and work_result != Trend.SIDEWAYS:
+            result = work_result
+        elif trend_result == momentum and trend_result != Trend.SIDEWAYS:
+            result = trend_result
         elif momentum != Trend.SIDEWAYS:
             result = momentum
-        # 5. Single clear trend (no momentum) → use it
-        elif work_trend != Trend.SIDEWAYS:
-            result = work_trend
-        elif daily_trend != Trend.SIDEWAYS:
-            result = daily_trend
+        elif work_result != Trend.SIDEWAYS:
+            result = work_result
+        elif trend_result != Trend.SIDEWAYS:
+            result = trend_result
         else:
             result = Trend.SIDEWAYS
 
         logger.info(
-            "BTC trend: %s (daily=%s, 4h=%s, momentum=%s)",
-            result.value, daily_trend.value, work_trend.value, momentum.value,
+            "BTC trend: %s (trend-TF=%s, work-TF=%s, momentum=%s)",
+            result.value, trend_result.value, work_result.value, momentum.value,
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Full scan
+    # ------------------------------------------------------------------
 
     def scan_all(self) -> list[Signal]:
         """Scan all configured symbols and return all valid signals."""
         all_signals: list[Signal] = []
 
-        # Clear price cache at the start of each full scan cycle
         self.exchange.clear_price_cache()
 
-        # Detect BTC trend BEFORE scanning altcoins
+        # Detect BTC trend
         if config.BTC_TREND_FILTER:
             self._btc_trend = self._detect_btc_trend()
         else:
@@ -179,34 +263,27 @@ class Scanner:
                 all_signals.extend(signals)
             except Exception as e:
                 logger.error("Error scanning %s: %s", symbol, e)
-            # Rate limiting
             time.sleep(0.5)
 
-        # Filter signals against BTC trend (altcoins only)
+        # BTC trend filter for altcoins
         if config.BTC_TREND_FILTER and self._btc_trend != Trend.SIDEWAYS:
             filtered = []
             for sig in all_signals:
-                # Don't filter BTC itself
                 if sig.symbol == _BTC_SYMBOL:
                     filtered.append(sig)
                     continue
-
-                # BTC UP → reject SHORT on alts
                 if self._btc_trend == Trend.UP and sig.direction == Direction.SHORT:
                     logger.info(
-                        "Filtered %s %s: BTC trend is UP, rejecting altcoin shorts",
+                        "Filtered %s %s: BTC trend UP, rejecting altcoin shorts",
                         sig.symbol, sig.direction.value,
                     )
                     continue
-
-                # BTC DOWN → reject LONG on alts
                 if self._btc_trend == Trend.DOWN and sig.direction == Direction.LONG:
                     logger.info(
-                        "Filtered %s %s: BTC trend is DOWN, rejecting altcoin longs",
+                        "Filtered %s %s: BTC trend DOWN, rejecting altcoin longs",
                         sig.symbol, sig.direction.value,
                     )
                     continue
-
                 filtered.append(sig)
 
             rejected = len(all_signals) - len(filtered)
@@ -217,9 +294,7 @@ class Scanner:
                 )
             all_signals = filtered
 
-        # Sort by confidence (highest first)
         all_signals.sort(key=lambda s: s.confidence, reverse=True)
-
         logger.info("Scan complete: %d signals found", len(all_signals))
         return all_signals
 

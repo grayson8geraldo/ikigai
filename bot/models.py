@@ -134,6 +134,21 @@ class Signal:
 
 
 @dataclass
+class WaveContext:
+    """Context from a higher timeframe for hierarchical wave analysis.
+
+    Captures where we are in the wave count on a higher TF so that
+    lower-TF signals can be validated against the larger structure.
+    """
+    trend: Trend
+    timeframe: str
+    expected_direction: Optional[Direction] = None
+    wave_label: str = ""       # e.g. "post_zigzag", "post_impulse"
+    structure_type: str = ""   # e.g. "impulse", "zigzag", "triangle"
+    confidence: float = 0.0
+
+
+@dataclass
 class Position:
     """An open trading position."""
     id: str

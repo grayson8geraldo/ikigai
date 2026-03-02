@@ -12,7 +12,7 @@ from typing import Optional
 
 import config
 from bot.models import (
-    SwingPoint, Wave, WaveStructure, WaveType, Trend, Direction,
+    SwingPoint, Wave, WaveStructure, WaveType, Trend, Direction, WaveContext,
 )
 
 logger = logging.getLogger(__name__)
@@ -625,6 +625,74 @@ def find_ending_diagonals(swings: list[SwingPoint]) -> list[WaveStructure]:
 # ---------------------------------------------------------------------------
 # Public API: full analysis
 # ---------------------------------------------------------------------------
+
+def get_wave_context(analysis: dict, timeframe: str) -> WaveContext:
+    """Determine the current wave context from analysis results.
+
+    Examines the most recent wave structures to infer:
+    - Where we are in the wave count
+    - What direction the next move is expected to be
+
+    This context is passed to lower-timeframe analysis so that
+    entry signals can be validated against the larger wave structure.
+    """
+    trend = analysis["trend"]
+
+    all_structures = (
+        analysis["impulses"] + analysis["zigzags"]
+        + analysis["triangles"] + analysis["diagonals"]
+    )
+
+    if not all_structures:
+        return WaveContext(trend=trend, timeframe=timeframe)
+
+    # Pick the most recent structure (by last wave end bar index)
+    most_recent = max(all_structures, key=lambda s: s.waves[-1].end.index)
+    last_wave = most_recent.waves[-1]
+    expected: Direction | None = None
+    label = ""
+
+    if most_recent.wave_type == WaveType.IMPULSE:
+        # After a completed impulse, expect a correction (opposite direction)
+        if last_wave.direction == Direction.LONG:
+            expected = Direction.SHORT
+        else:
+            expected = Direction.LONG
+        label = "post_impulse"
+
+    elif most_recent.wave_type == WaveType.ZIGZAG:
+        # After a zigzag correction, expect trend continuation
+        if trend == Trend.UP:
+            expected = Direction.LONG
+        elif trend == Trend.DOWN:
+            expected = Direction.SHORT
+        label = "post_zigzag"
+
+    elif most_recent.wave_type == WaveType.TRIANGLE:
+        # After a triangle, expect breakout in the trend direction
+        if trend == Trend.UP:
+            expected = Direction.LONG
+        elif trend == Trend.DOWN:
+            expected = Direction.SHORT
+        label = "post_triangle"
+
+    elif most_recent.wave_type == WaveType.DIAGONAL:
+        # After an ending diagonal, expect reversal
+        if last_wave.direction == Direction.LONG:
+            expected = Direction.SHORT
+        else:
+            expected = Direction.LONG
+        label = "post_diagonal"
+
+    return WaveContext(
+        trend=trend,
+        timeframe=timeframe,
+        expected_direction=expected,
+        wave_label=label,
+        structure_type=most_recent.wave_type.value,
+        confidence=most_recent.confidence,
+    )
+
 
 def analyze(df: pd.DataFrame) -> dict:
     """Run full wave analysis on OHLCV data.
