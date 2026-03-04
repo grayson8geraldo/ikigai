@@ -97,9 +97,11 @@ def print_status(trader: Trader):
     print(f"\n  Open Positions: {len(positions)}")
     for p in positions:
         dir_icon = "LONG" if p.direction.value == "long" else "SHORT"
+        hold_h = (time.time() - p.open_time) / 3600 if p.open_time else 0
         print(f"    [{p.id}] {p.symbol} {dir_icon} @ {p.entry_price:.4f}"
               f" | SL: {p.stop_loss:.4f} | TP: {p.take_profit:.4f}"
-              f" | Margin: ${p.margin:.2f} x{p.leverage}")
+              f" | Margin: ${p.margin:.2f} x{p.leverage}"
+              f" | {hold_h:.1f}h")
 
     print(f"\n  Statistics:")
     print(f"    Total trades:  {stats['total']}")
@@ -110,6 +112,21 @@ def print_status(trader: Trader):
     if stats['total'] > 0:
         print(f"    Avg win:       ${stats['avg_win']:.2f}")
         print(f"    Avg loss:      ${stats['avg_loss']:.2f}")
+
+    # Self-learning stats
+    learn = trader.learner.get_stats_summary()
+    print(f"\n  Self-Learning: {learn['status'].upper()}")
+    if learn['status'] == 'active':
+        print(f"    Trades analyzed:   {learn['trades_analyzed']}")
+        print(f"    Best setup:        {learn['best_setup']}")
+        print(f"    Worst setup:       {learn['worst_setup']}")
+        print(f"    Best symbol:       {learn['best_symbol']}")
+        print(f"    Worst symbol:      {learn['worst_symbol']}")
+        print(f"    Avg win:           {learn['avg_winning_pct']:.1f}%")
+        print(f"    Avg loss:          {learn['avg_losing_pct']:.1f}%")
+        print(f"    Avg hold (wins):   {learn['avg_profitable_hold_h']:.1f}h")
+    elif learn['status'] == 'waiting':
+        print(f"    Collecting data... (need 5+ trades)")
     print()
 
 
@@ -180,7 +197,7 @@ def main():
     exchange = Exchange()
     risk_manager = RiskManager(balance=config.PAPER_DEPOSIT)
     trader = Trader(exchange, risk_manager)
-    scanner = Scanner(exchange)
+    scanner = Scanner(exchange, learner=trader.learner)
 
     if args.status:
         print_status(trader)

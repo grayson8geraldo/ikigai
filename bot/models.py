@@ -166,6 +166,11 @@ class Position:
     close_price: float = 0.0
     pnl: float = 0.0
     is_open: bool = True
+    # Metadata for self-learning (persisted to disk)
+    setup_type: str = ""       # e.g. "zigzag_breakout"
+    signal_timeframe: str = "" # e.g. "15m"
+    signal_confidence: float = 0.0
+    signal_factors: list = field(default_factory=list)
 
     def __post_init__(self):
         if self.open_time == 0.0:

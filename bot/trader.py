@@ -11,6 +11,7 @@ import config
 from bot.models import Signal, Position, Direction
 from bot.exchange import Exchange
 from bot.risk_manager import RiskManager
+from bot.learner import Learner
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ class Trader:
         self.history: list[dict] = []
         # Cooldown: signal_key -> timestamp of last trade close
         self._signal_cooldowns: dict[str, float] = {}
+        self.learner = Learner()
         self._load_state()
 
     @staticmethod
@@ -65,6 +67,10 @@ class Trader:
                         signal=None,  # signal not persisted
                         open_time=p.get("open_time", 0),
                         is_open=p.get("is_open", True),
+                        setup_type=p.get("setup_type", ""),
+                        signal_timeframe=p.get("signal_timeframe", ""),
+                        signal_confidence=p.get("signal_confidence", 0.0),
+                        signal_factors=p.get("signal_factors", []),
                     )
                     if not pos.is_open:
                         continue
@@ -140,6 +146,10 @@ class Trader:
                 "take_profit": p.take_profit,
                 "open_time": p.open_time,
                 "is_open": p.is_open,
+                "setup_type": p.setup_type,
+                "signal_timeframe": p.signal_timeframe,
+                "signal_confidence": p.signal_confidence,
+                "signal_factors": p.signal_factors,
             })
         with open(POSITIONS_FILE, "w") as f:
             json.dump(data, f, indent=2)
@@ -321,6 +331,10 @@ class Trader:
             stop_loss=actual_sl,
             take_profit=actual_tp,
             signal=signal,
+            setup_type=signal.setup_type.value,
+            signal_timeframe=signal.timeframe,
+            signal_confidence=signal.confidence,
+            signal_factors=list(signal.factors),
         )
 
         self.positions.append(position)
@@ -411,7 +425,7 @@ class Trader:
             self._signal_cooldowns[sig_key] = time.time()
             logger.info("Signal cooldown set for %s (%dh)", sig_key, config.SIGNAL_COOLDOWN_HOURS)
 
-        # Record to history
+        # Record to history (including metadata for self-learning)
         self.history.append({
             "id": pos.id,
             "symbol": pos.symbol,
@@ -423,9 +437,16 @@ class Trader:
             "reason": reason,
             "open_time": pos.open_time,
             "close_time": pos.close_time,
+            "setup_type": pos.setup_type,
+            "timeframe": pos.signal_timeframe,
+            "confidence": pos.signal_confidence,
+            "factors": pos.signal_factors,
         })
 
         self._save_state()
+
+        # Trigger self-learning update
+        self.learner.update(self.history)
 
         emoji = "+" if pos.pnl >= 0 else ""
         logger.info(

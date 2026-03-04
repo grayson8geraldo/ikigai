@@ -16,6 +16,7 @@ from bot.exchange import Exchange
 from bot.wave_analyzer import analyze, get_wave_context
 from bot.setups import check_zigzag_setup, check_diagonal_setup, check_triangle_setup
 from bot.models import Signal, Direction, Trend, WaveContext
+from bot.learner import Learner
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,9 @@ _BTC_SYMBOL = "BTC/USDT"
 class Scanner:
     """Scans multiple symbols with hierarchical wave analysis."""
 
-    def __init__(self, exchange: Exchange):
+    def __init__(self, exchange: Exchange, learner: Learner = None):
         self.exchange = exchange
+        self.learner = learner
         self._btc_trend: Trend = Trend.SIDEWAYS
 
     # ------------------------------------------------------------------
@@ -293,6 +295,24 @@ class Scanner:
                     self._btc_trend.value, rejected, len(all_signals),
                 )
             all_signals = filtered
+
+        # Apply self-learning weights to adjust signal confidence
+        if self.learner:
+            for sig in all_signals:
+                mult = self.learner.get_signal_multiplier(
+                    setup_type=sig.setup_type.value,
+                    symbol=sig.symbol,
+                    direction=sig.direction.value,
+                )
+                if mult != 1.0:
+                    old_conf = sig.confidence
+                    sig.confidence = min(max(sig.confidence * mult, 0.05), 1.0)
+                    sig.factors.append(f"Learned weight: {mult:.2f}x")
+                    logger.info(
+                        "Learning adjusted %s %s confidence: %.2f → %.2f (x%.2f)",
+                        sig.symbol, sig.direction.value,
+                        old_conf, sig.confidence, mult,
+                    )
 
         all_signals.sort(key=lambda s: s.confidence, reverse=True)
         logger.info("Scan complete: %d signals found", len(all_signals))
