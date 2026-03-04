@@ -149,11 +149,17 @@ class Learner:
         self.weights = weights
         self._save_weights()
 
+        # Count how many trades have full metadata vs legacy (partial)
+        with_setup = sum(1 for t in history if t.get("setup_type"))
+        legacy = len(history) - with_setup
+
         logger.info(
-            "Learning update: %d trades → setup_weights=%s, symbol_count=%d",
-            len(history),
+            "Learning update: %d trades (%d with metadata, %d legacy) → "
+            "setup_weights=%s, symbol_weights=%d, dir_weights=%s",
+            len(history), with_setup, legacy,
             {k: round(v, 2) for k, v in weights["setup_type"].items()},
             len(weights["symbol"]),
+            {k: round(v, 2) for k, v in weights["direction"].items()},
         )
 
     def _learn_category(

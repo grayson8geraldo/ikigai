@@ -31,6 +31,9 @@ class Trader:
         self._signal_cooldowns: dict[str, float] = {}
         self.learner = Learner()
         self._load_state()
+        # Bootstrap learning from existing trade history
+        if self.history:
+            self.learner.update(self.history)
 
     @staticmethod
     def _signal_key(signal: Signal) -> str:
