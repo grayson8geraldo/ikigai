@@ -47,14 +47,16 @@ if TRADING_PROFILE == "intraday":
         "work": "1h",
         "entry": "15m",
     }
-    SWING_LOOKBACK = int(os.getenv("SWING_LOOKBACK", "3"))
+    SWING_LOOKBACK = int(os.getenv("SWING_LOOKBACK", "5"))
     MIN_SWING_PCT = float(os.getenv("MIN_SWING_PCT", "0.005"))       # 0.5%
     MIN_STOP_DISTANCE_PCT = float(os.getenv("MIN_STOP_DISTANCE_PCT", "0.005"))  # 0.5%
     SIGNAL_COOLDOWN_HOURS = int(os.getenv("SIGNAL_COOLDOWN_HOURS", "1"))
-    MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", "2.0"))
+    MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", "2.5"))
     MAX_POSITION_AGE_HOURS = int(os.getenv("MAX_POSITION_AGE_HOURS", "12"))
     DEFAULT_SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "5"))
-    ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.03"))  # 3%
+    ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.015"))  # 1.5%
+    # Volume confirmation: current volume must be >= this multiplier of 20-bar average
+    VOLUME_CONFIRM_MULTIPLIER = float(os.getenv("VOLUME_CONFIRM_MULTIPLIER", "1.2"))
     # Fibonacci target ratios for intraday (closer targets)
     TARGET_RATIOS_ZIGZAG = [0.618, 1.0, 1.618]
     TARGET_RATIOS_TRIANGLE = [0.618, 1.0]
@@ -73,6 +75,7 @@ else:
     MAX_POSITION_AGE_HOURS = int(os.getenv("MAX_POSITION_AGE_HOURS", "48"))
     DEFAULT_SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "15"))
     ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.05"))  # 5%
+    VOLUME_CONFIRM_MULTIPLIER = float(os.getenv("VOLUME_CONFIRM_MULTIPLIER", "1.2"))
     TARGET_RATIOS_ZIGZAG = [1.618, 2.618, 3.618]
     TARGET_RATIOS_TRIANGLE = [1.0, 1.618]
 

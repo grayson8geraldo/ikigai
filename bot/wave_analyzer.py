@@ -431,7 +431,7 @@ def find_zigzags(swings: list[SwingPoint]) -> list[WaveStructure]:
                 if 0.3 < b_ratio < 0.8:
                     confidence += 0.2
                 c_ratio = wc.length / wa.length
-                if 0.8 < c_ratio < 2.8:
+                if 0.9 < c_ratio < 2.0:
                     confidence += 0.2
 
             for j, label in enumerate(["A", "B", "C"]):
@@ -453,7 +453,7 @@ def find_zigzags(swings: list[SwingPoint]) -> list[WaveStructure]:
                 if 0.3 < b_ratio < 0.8:
                     confidence += 0.2
                 c_ratio = wc.length / wa.length
-                if 0.8 < c_ratio < 2.8:
+                if 0.9 < c_ratio < 2.0:
                     confidence += 0.2
 
             for j, label in enumerate(["A", "B", "C"]):

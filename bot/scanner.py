@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Optional
 
+import numpy as np
 import config
 from bot.exchange import Exchange
 from bot.wave_analyzer import analyze, get_wave_context
@@ -26,6 +27,7 @@ _WORK_CONTEXT_BONUS = 0.10    # entry signal aligns with work-TF context
 _MTF_DIRECTION_BONUS = 0.10   # entry signal direction confirmed on work TF
 
 _BTC_SYMBOL = "BTC/USDT"
+_VOLUME_AVG_PERIOD = 20  # bars for average volume calculation
 
 
 class Scanner:
@@ -120,6 +122,10 @@ class Scanner:
                     f"confirmed on {config.TIMEFRAMES['work']}"
                 )
 
+        # Volume confirmation: reject signals when entry-TF volume is below average
+        if not df_entry.empty and entry_signals:
+            entry_signals = self._filter_by_volume(entry_signals, df_entry)
+
         # Merge and deduplicate
         all_sigs = work_signals + entry_signals
         return _deduplicate_signals(all_sigs)
@@ -176,6 +182,43 @@ class Scanner:
             signal.factors.append(
                 f"Aligned with {context.timeframe} {context.wave_label}"
             )
+
+    # ------------------------------------------------------------------
+    # Volume confirmation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _filter_by_volume(signals: list[Signal], df) -> list[Signal]:
+        """Reject signals when current volume is below the rolling average.
+
+        This filters out false breakouts and weak setups that lack
+        market participation.
+        """
+        if "volume" not in df.columns or len(df) < _VOLUME_AVG_PERIOD + 1:
+            return signals  # no volume data — pass through
+
+        volumes = df["volume"].values
+        avg_vol = np.mean(volumes[-_VOLUME_AVG_PERIOD - 1 : -1])  # exclude current bar
+        current_vol = volumes[-1]
+
+        if avg_vol <= 0:
+            return signals
+
+        vol_ratio = current_vol / avg_vol
+        threshold = config.VOLUME_CONFIRM_MULTIPLIER
+
+        if vol_ratio >= threshold:
+            # Volume confirmed — boost confidence slightly
+            for sig in signals:
+                sig.confidence = min(sig.confidence + 0.05, 1.0)
+                sig.factors.append(f"Volume confirmed: {vol_ratio:.1f}x avg")
+            return signals
+        else:
+            logger.info(
+                "Volume filter: rejected %d signal(s) — vol ratio %.2f < %.2f threshold",
+                len(signals), vol_ratio, threshold,
+            )
+            return []
 
     # ------------------------------------------------------------------
     # BTC trend detection
